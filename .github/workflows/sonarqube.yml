@@ -1,0 +1,37 @@
+name: sonarqube
+
+on:
+  workflow_call:
+    inputs:
+      release-version:
+        description: 'Version of the project'
+        required: true
+        type: string
+      language:
+        description: "Programming language of the application."
+        required: false
+        type: string
+      sonar-source-encoding:
+        description: 'Source encoding for the SonarQube project (default: UTF-8)'
+        required: false
+        type: string
+        default: 'UTF-8'
+
+jobs:
+  sonarqube:
+    runs-on:
+      group: Default
+      labels: ${{ vars.RUNNER_BUILD_LABEL }}
+    steps:
+      - name: Ejecuta SonarQube    
+        uses: mario-fribla-gonzalez/sonarqube-scan@main
+        env:
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_ALLOW_INSECURE: ${{ vars.SONAR_ALLOW_INSECURE }}
+        with:
+          language: ${{ inputs.language }}
+          sonar-project-key: ${{ github.event.repository.name }}
+          sonar-project-name: ${{ github.event.repository.name }}
+          sonar-project-version: ${{ inputs.release-version }}
+          sonar-source-encoding:  ${{ inputs.sonar-source-encoding }}

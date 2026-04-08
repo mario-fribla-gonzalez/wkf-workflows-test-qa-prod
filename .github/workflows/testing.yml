@@ -1,0 +1,187 @@
+name: build-and-optional-deploy
+
+on:
+  push:
+      branches-ignore:
+        - main
+  
+  workflow_call:
+    inputs:
+      language:
+        description: "Programming language of the application"
+        required: true
+        type: string
+      source-encoding:
+        description: "Sonar source encoding"
+        required: false
+        type: string
+        default: "UTF-8"
+
+      # TypeScript / Node
+      node-version:
+        required: false
+        type: string
+      typescript-framework:
+        required: false
+        type: string
+      typescript-nombre-sitio:
+        required: false
+        type: string
+        default: "None"
+        
+      # .NET
+      dotnet-version:
+        required: false
+        type: string
+      dotnet-selfcontained:
+        required: false
+        type: boolean
+        default: false
+
+      # Deploy config
+      deployment-type:
+        description: "msdeploy, docker, etc."
+        required: true
+        type: string
+      deployment-name:
+        description: "App name (e.g. ApiArquitectura)"
+        required: false
+        type: string
+        default: "${{ vars.DEPLOYMENT_NAME }}"
+
+      # Reusabilidad extra
+      run-deploy:
+        description: "Run deploy stage?"
+        required: false
+        type: boolean
+        default: true
+      environments:
+        description: "Comma-separated environments (e.g. development,staging-1)"
+        required: false
+        type: string
+        default: "development"
+
+      # IIS inputs con fallback a org vars
+      iis-server-name:
+        required: false
+        type: string
+        default: "${{ vars.IIS_SERVER_NAME }}"
+      iis-server-username:
+        required: false
+        type: string
+        default: "${{ vars.IIS_SERVER_USERNAME }}"
+      ambiente:
+        required: false
+        type: string
+        default: "dev"        
+
+    secrets:
+      IIS_SERVER_KEY:
+        required: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: testing-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  valida-parametros:
+    if: ${{ github.repository_owner == vars.VAR_ORGANIZACION && github.ref != 'refs/heads/main' && github.event.head_commit != null && github.event.created == false }} 
+    runs-on:
+      group: Default
+      labels: ${{ vars.RUNNER_BUILD_LABEL }}
+    steps:
+      - name: Valida Parametros
+        shell: powershell
+        run: |
+          $varlanguage= "${{ inputs.language }}"
+          $vartypescriptnombresitio = "${{ inputs.typescript-nombre-sitio }}"
+          if ($varlanguage -eq "typescript" -and $vartypescriptnombresitio -eq "None")
+          {  write-Host "error:: Falta Variable typescript-nombre-sitio con nombre de sitio" 
+             exit 1 
+          }
+          exit 0
+    
+  build:
+    needs: [valida-parametros]
+    if: ${{ github.repository_owner == vars.VAR_ORGANIZACION && github.ref != 'refs/heads/main' && github.event.head_commit != null && github.event.created == false }} 
+    uses: ./.github/workflows/build.yml
+    permissions:
+      contents: read
+      actions: read
+    with:
+      language: ${{ inputs.language }}
+      node-version: ${{ inputs.node-version }}
+      typescript-framework: ${{ inputs.typescript-framework }}
+      dotnet-version: ${{ inputs.dotnet-version }}
+      dotnet-selfcontained: ${{ inputs.dotnet-selfcontained }}
+      source-encoding: ${{ inputs.source-encoding }}
+      deployment-type: ${{ inputs.deployment-type }}
+      deployment-name: ${{ inputs.deployment-name }}
+    secrets: inherit
+
+  # Parsear el CSV de ambientes a una matriz
+  _fanout:
+    if: ${{ github.repository_owner == vars.VAR_ORGANIZACION && github.ref != 'refs/heads/main' && github.event.head_commit != null && github.event.created == false }} 
+    runs-on:
+      group: Default
+      labels: ${{ vars.RUNNER_BUILD_LABEL }}
+    needs: [build]
+    outputs:
+      env_json: ${{ steps.split.outputs.env_json }}
+    steps:
+      - id: split
+        shell: powershell
+        run: |
+          $environments = "${{ inputs.environments }}".Split(',')
+          $jsonArray = @()
+          foreach ($env in $environments) {
+              $cleanEnv = $env.Trim()
+              if ($cleanEnv) {
+                  $jsonArray += "`"$cleanEnv`""
+              }
+          }
+          $jsonOutput = "[" + ($jsonArray -join ',') + "]"
+          Write-Host "Matrix = $jsonOutput"
+          echo "env_json=$jsonOutput" >> "$env:GITHUB_OUTPUT"
+
+  deploy:
+    if: ${{ github.repository_owner == vars.VAR_ORGANIZACION && github.ref != 'refs/heads/main' && github.event.head_commit != null && github.event.created == false }} 
+    needs: [build, _fanout]
+    runs-on:
+      group: Default
+      labels: ${{ vars.RUNNER_DEPLOY_LABEL }}
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJson(needs._fanout.outputs.env_json) }}
+    environment: ${{ matrix.environment }}
+    timeout-minutes: 30
+    steps:
+      # === Descarga el artifact 'assets' del job de build ===
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: assets
+
+     # === Deploy (usa deployment-action) ===
+      - name: Deploy with msdeploy (or other)
+        uses:mario-fribla-gonzalez/deployment-action@main
+        env:
+          IIS_ALLOW_INSECURE: ${{ vars.IIS_ALLOW_INSECURE }}
+        with:
+          deployment-type:         ${{ inputs.deployment-type }}
+          package-name:            ${{ needs.build.outputs.package-name }}
+          package-extension:       ${{ needs.build.outputs.package-extension }}
+          deployment-name:         ${{ inputs.deployment-name }}
+          release-version:         ${{ needs.build.outputs.release-version }}
+          iis-server-name:         ${{ inputs.iis-server-name }}
+          iis-server-username:     ${{ inputs.iis-server-username }}
+          iis-server-key:          ${{ secrets.IIS_SERVER_KEY }}
+          typescript-nombre-sitio: ${{ inputs.typescript-nombre-sitio }}
+          directorio-path:         '\\archivos.envdesa\deployapp'
+
+  

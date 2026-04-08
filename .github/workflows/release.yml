@@ -1,0 +1,249 @@
+name: promote
+
+on:
+  push:
+    branches:
+      - main
+  workflow_call:
+    inputs:
+      deployment-type:
+        description: "Type of deployment (e.g., msdeploy, docker)"
+        required: true
+        type: string
+      deployment-name:
+        description: "App name (e.g., ApiArquitectura)"
+        required: false
+        type: string
+        default: "${{ vars.DEPLOYMENT_NAME }}"
+      release-version:
+        description: "vX.Y.Z (sin -rc)"
+        required: true
+        type: string
+        default: "v1.0.0"
+      prerelease:
+        description: "Crear/incrementar rc"
+        required: false
+        type: boolean
+        default: true
+      typescript-nombre-sitio:
+        required: false
+        type: string
+        default: "None"
+      ambiente:
+        required: false
+        type: string
+        default: "prod"               
+        
+  workflow_dispatch:
+    inputs:
+      deployment-type:
+        description: "Tipo de deployment"
+        required: true
+        default: "msdeploy"
+      deployment-name:
+        description: "Nombre app"
+        required: false
+        default: ""
+      release-version:
+        description: "vX.Y.Z (sin -rc)"
+        required: true
+        default: "v1.0.1"
+      prerelease:
+        description: "Crear/incrementar rc"
+        type: boolean
+        required: true
+        default: true
+      typescript-nombre-sitio:
+        required: false
+        type: string
+        default: "None"
+        
+  pull_request_target:
+    branches: [main, master]
+    types: [closed]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  valida-parametros:
+    if: ${{ github.repository_owner == vars.VAR_ORGANIZACION && github.ref == 'refs/heads/main' && github.event.pull_request.merged == true }}
+    runs-on:
+      group: Default
+      labels: ${{ vars.RUNNER_BUILD_LABEL }}
+    steps:
+      - name: Valida Parametros
+        shell: powershell
+        run: |
+          $varlanguage= "${{ inputs.language }}"
+          $vartypescriptnombresitio = "${{ inputs.typescript-nombre-sitio }}"
+          if ($varlanguage -eq "typescript" -and $vartypescriptnombresitio -eq "None")
+          {  write-Host "error:: Falta Variable typescript-nombre-sitio con nombre de sitio" 
+             exit 1 
+          }
+          exit 0
+          
+  promote:
+    needs: [valida-parametros]  
+    if: ${{ (github.event.pull_request.merged == true || ( (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main') )) && github.event.pull_request.merged == true && github.repository_owner == vars.VAR_ORGANIZACION }}
+    runs-on:
+      group: Default
+      labels: ${{ vars.RUNNER_BUILD_LABEL }}
+    permissions:
+      contents: write
+
+    # Fija variables para soportar workflow_call y workflow_dispatch
+    env:
+      DEPLOYMENT_TYPE: ${{ inputs.deployment-type || github.event.inputs.deployment-type }}
+      DEPLOYMENT_NAME: ${{ inputs.deployment-name  || github.event.inputs.deployment-name  || vars.DEPLOYMENT_NAME }}
+      RELEASE_VERSION: ${{ inputs.release-version  || github.event.inputs.release-version }}
+      PRERELEASE:      ${{ inputs.prerelease       || github.event.inputs.prerelease }}
+
+    outputs:
+      artifact-prefix:    ${{ steps.publish-release.outputs['artifact-prefix'] }}
+      artifact-extension: ${{ steps.publish-release.outputs['artifact-extension'] }}
+      release-version:    ${{ inputs.release-version || env.RELEASE_VERSION }}
+      existe-version:     ${{ steps.tag_exists_win.outputs.exists }}
+
+    steps:
+      - name: Sanitize git extraheaders
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'SilentlyContinue'
+          function Ignore { if ($LASTEXITCODE -ne 0) { $global:LASTEXITCODE = 0 } }
+          git --version; Ignore
+          git config --global --unset-all http.https://github.com/.extraheader; Ignore
+          git config --system  --unset-all http.https://github.com/.extraheader; Ignore
+          Remove-Item Env:\GIT_HTTP_EXTRAHEADER -ErrorAction SilentlyContinue
+          [Environment]::SetEnvironmentVariable("GIT_HTTP_EXTRAHEADER",$null,"User")
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+
+      - name: Configure git remote with token
+        shell: powershell
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GITHUB_TOKEN:  ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $token = if (![string]::IsNullOrWhiteSpace($env:RELEASE_TOKEN)) { $env:RELEASE_TOKEN } else { $env:GITHUB_TOKEN }
+          if ([string]::IsNullOrWhiteSpace($token)) { throw "No token available (RELEASE_TOKEN/GITHUB_TOKEN)" }
+          Write-Output "::add-mask::$token"
+          $repo = "${{ github.repository }}"
+          git config --local credential.interactive never
+          git config --local core.askPass ""
+          git remote set-url origin "https://x-access-token:$token@github.com/$repo.git"
+          git config --local user.name  "github-actions[bot]"
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote -v
+
+      - name: Check remote permissions
+        shell: powershell
+        run: |
+          $refName = $env:GITHUB_REF_NAME
+          if ($env:GITHUB_EVENT_NAME -like "pull_request*") { $refName = $env:GITHUB_HEAD_REF }
+          if (-not $refName -or $refName -eq "HEAD") { $refName = (git rev-parse --abbrev-ref HEAD) }
+          Write-Host "Verificando acceso a refs/heads/$refName"
+          git ls-remote --heads origin "refs/heads/$refName"
+
+      - name: Detectar tag rc en el commit actual
+        id: detect_tag_win
+        shell: powershell
+        run: |
+          git fetch --tags --quiet
+          $base='${{ env.RELEASE_VERSION }}'
+          $pattern = '^' + [regex]::Escape($base) + '-rc\.\d+$'
+          $tags = git tag --points-at $env:GITHUB_SHA
+          $match = $null
+          foreach ($t in ($tags -split "`n")) { if ($t -match $pattern) { $match = $t; break } }
+          if ($match) { "tag=$match" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
+
+      - name: Check if final tag exists
+        id: tag_exists_win
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'SilentlyContinue'
+          git fetch --tags --quiet
+          $tag='${{ env.RELEASE_VERSION }}'
+          [string]$status= git show-ref --tags --verify "refs/tags/$tag" | Out-String
+          if( [int]$status.Length -gt 0 ) {
+            "exists=true"  | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Host "!!El Tag Ingresado: $tag, Ya Existe!!, Ingresa Otra Version de Tag en el archivo: release.yml de tu Repositorio."
+            echo "##[error]!!El Tag Ingresado: $tag, Ya Existe!!, Ingresa Otra Version de Tag en el archivo: release.yml de tu Repositorio."
+          } else {
+            "exists=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Host "Tag $tag No Existe."            
+          }
+          exit 0
+
+      - name: Remove 'assets' dir if present
+        shell: powershell
+        run: |
+          if (Test-Path -Path "assets") {
+            Write-Host "Removing existing 'assets' directory to avoid EISDIR"
+            Remove-Item -Recurse -Force "assets"
+          }
+
+      - id: publish-release
+        if: ${{ steps.tag_exists_win.outputs.exists != 'true' && steps.detect_tag_win.outputs.tag == '' }}
+        uses:  mario-fribla-gonzalez/publish-release@main
+        with:
+          commit-sha: ${{ github.event.pull_request.head.sha || github.sha }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          nrelease-version: ${{ inputs.release-version }}
+          
+      - name: Cleanup local auth
+        if: ${{ always() }}
+        shell: powershell
+        run: |
+          $repo = "${{ github.repository }}"
+          git remote set-url origin "https://github.com/$repo.git" 2>$null
+
+  deploy:
+    if: ${{ ( github.event.pull_request.merged == true || (( github.event_name == 'push' || github.event_name == 'workflow_dispatch' ) && ( github.ref == 'refs/heads/main' ))) && github.event.pull_request.merged == true && needs.promote.outputs.existe-version != 'true' && github.repository_owner == vars.VAR_ORGANIZACION }}
+    runs-on:
+      group: Default
+      labels: ${{ vars.RUNNER_DEPLOY_LABEL_PROD }}
+    # Set environment based on the branch
+    needs:
+      - promote
+    environment: ${{matrix.environment}}
+    steps:
+      - uses: mario-fribla-gonzalez/deployment-action@main
+        env:
+          IIS_ALLOW_INSECURE: ${{ vars.IIS_ALLOW_INSECURE }}
+        with:
+          deployment-type:         ${{ inputs['deployment-type'] }}
+          package-name:            ${{ needs.promote.outputs.artifact-prefix }}
+          package-extension:       ${{ needs.promote.outputs.artifact-extension }}
+          deployment-name:         ${{ inputs['deployment-name'] }}
+          release-version:         ${{ needs.promote.outputs.release-version }}
+          iis-server-name:         ${{ vars.IIS_SERVER_NAME }}
+          iis-server-username:     ${{ vars.IIS_SERVER_USERNAME }}
+          iis-server-key:          ${{ secrets.IIS_SERVER_KEY }}
+          typescript-nombre-sitio: ${{ inputs.typescript-nombre-sitio }}
+          directorio-path:         '\\domainuap.cl\Salida_Aplicaciones\ReplicaAngular'    
+          environment:             ${{matrix.environment}}
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [production-1]
+
+
+  notify:
+    if: ${{ ( github.event.pull_request.merged == true || (( github.event_name == 'push' || github.event_name == 'workflow_dispatch' ) && ( github.ref == 'refs/heads/main' ))) && github.event.pull_request.merged == true && github.repository_owner == vars.VAR_ORGANIZACION }}
+    runs-on:
+      group: Default
+      labels: ${{ vars.RUNNER_BUILD_LABEL }}
+    needs: deploy
+    steps:
+      - name: Notify Action
+        shell: powershell
+        run: |
+          Write-Host "Se procede a la Notificar..."
+          

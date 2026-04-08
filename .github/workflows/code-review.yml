@@ -1,0 +1,214 @@
+name: code-review
+description: "Validate the repository for secrets and leaks"
+
+on:
+  workflow_call:
+    inputs:
+      language:
+        description: 'Programming language of the application'
+        required: true
+        type: string
+
+jobs:
+  gitleaks:
+    runs-on:
+      group: Default
+      labels: ${{ vars.RUNNER_BUILD_LABEL }}
+    steps:
+      - name: 'Elimina WorkSpace Runner'
+        if: always()
+        shell: powershell
+        run: |
+          try {
+             Remove-Item -Path ${{ github.workspace }}\* -Recurse -Force
+          }
+          catch {
+             Write-Output "La limpieza falló o no hay archivos para eliminar"
+          }
+          try {
+             Remove-Item -Path ${{ github.workspace }}\.\.?* -Recurse -Force
+          }
+          catch {
+             Write-Output "Error al limpiar archivos ocultos"
+          }
+          exit 0
+      # --- Sanitize (Windows)
+      - name: Sanitize git extraheaders (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'SilentlyContinue'
+          function Ignore { if ($LASTEXITCODE -ne 0) { $global:LASTEXITCODE = 0 } }
+          git --version; Ignore
+          git config --global --unset-all http.https://github.com/.extraheader; Ignore
+          git config --system --unset-all http.https://github.com/.extraheader; Ignore
+          Remove-Item Env:\GIT_HTTP_EXTRAHEADER -ErrorAction SilentlyContinue
+          [Environment]::SetEnvironmentVariable("GIT_HTTP_EXTRAHEADER",$null,"User")
+
+      # --- Sanitize (Linux/macOS)
+      - name: Sanitize git extraheaders (bash)
+        if: ${{ runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          git --version || true
+          git config --global --unset-all http.https://github.com/.extraheader || true
+          git config --system --unset-all http.https://github.com/.extraheader || true
+          unset GIT_HTTP_EXTRAHEADER || true
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: mario-fribla-gonzalez/gitleak-scan@main
+        with:
+          gitleaks-version: '8.27.2'
+         
+  detect-secrets:
+    runs-on:
+      group: Default
+      labels: ${{ vars.RUNNER_BUILD_LABEL }}
+    steps:
+      # --- Sanitize (Windows)
+      - name: Sanitize git extraheaders (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'SilentlyContinue'
+          function Ignore { if ($LASTEXITCODE -ne 0) { $global:LASTEXITCODE = 0 } }
+          git --version; Ignore
+          git config --global --unset-all http.https://github.com/.extraheader; Ignore
+          git config --system --unset-all http.https://github.com/.extraheader; Ignore
+          Remove-Item Env:\GIT_HTTP_EXTRAHEADER -ErrorAction SilentlyContinue
+          [Environment]::SetEnvironmentVariable("GIT_HTTP_EXTRAHEADER",$null,"User")
+
+      # --- Sanitize (Linux/macOS)
+      - name: Sanitize git extraheaders (bash)
+        if: ${{ runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          git --version || true
+          git config --global --unset-all http.https://github.com/.extraheader || true
+          git config --system --unset-all http.https://github.com/.extraheader || true
+          unset GIT_HTTP_EXTRAHEADER || true
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - uses: mario-fribla-gonzalez/detect-secrets@main
+        with:
+          detect-secrets-version: '1.5.0'
+
+  dependency-check:
+    # Disable Dependency-Check requested by Cristhian Alvarez CC: Luis Mu#oz
+    # Enable Delete line 97 to 99
+    if: 1 == 0
+    runs-on:
+      group: Default
+      labels: ${{ vars.RUNNER_BUILD_LABEL }}
+    name: dependency-check
+    steps:
+      # --- Sanitize (Windows)
+      - name: Sanitize git extraheaders (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'SilentlyContinue'
+          function Ignore { if ($LASTEXITCODE -ne 0) { $global:LASTEXITCODE = 0 } }
+          git --version; Ignore
+          git config --global --unset-all http.https://github.com/.extraheader; Ignore
+          git config --system --unset-all http.https://github.com/.extraheader; Ignore
+          Remove-Item Env:\GIT_HTTP_EXTRAHEADER -ErrorAction SilentlyContinue
+          [Environment]::SetEnvironmentVariable("GIT_HTTP_EXTRAHEADER",$null,"User")
+
+      # --- Sanitize (Linux/macOS)
+      - name: Sanitize git extraheaders (bash)
+        if: ${{ runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          git --version || true
+          git config --global --unset-all http.https://github.com/.extraheader || true
+          git config --system --unset-all http.https://github.com/.extraheader || true
+          unset GIT_HTTP_EXTRAHEADER || true
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Cache Dependency-Check data restore
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.dependency-check
+          key: dependency-check-data
+
+      - name: Dependency Check
+        uses: mario-fribla-gonzalez/dependency-check@main
+        with:
+          version: '12.1.0'
+          project: ${{ github.event.repository.name }}
+          format: 'XML,JSON,HTML'
+          path: '.'
+          out: reports
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY || '' }}
+
+      - name: Upload Dependency Check results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check
+          path: dependency-check-report.*
+
+  validacionhead:
+    if: ${{ inputs.language == 'typescript' }}
+    runs-on:
+      group: Default
+      labels: ${{ vars.RUNNER_BUILD_LABEL }}
+    name: Validacion Head
+    steps:
+      - name: Revisión de Cabeceras Frontend
+        run: |
+          # Define the strings to search for
+          $stringsToCheck = @(
+              'Header set Strict-Transport-Security "max-age=31536000; includeSubdomains" env=HTTPS',
+              'Header set X-Content-Type-Options nosniff',
+              'Header set Referrer-Policy "same-origin"',
+              'Header set Content-Security-Policy'
+          )
+          # Check if .htaccess file exists in the current directory
+          if (-not (Test-Path -Path ".\src\.htaccess")) {
+              echo "##[error]ERROR: archivo .htaccess no encontrado."
+              exit 1
+          }
+          # Read the content of .htaccess file
+          $fileContent = Get-Content -Path ".\src\.htaccess" -Raw
+          # Check if each string exists in the file content
+          $allStringsExist = $true
+          foreach ($string in $stringsToCheck) {
+              if ($fileContent -notmatch [regex]::Escape($string)) {
+                  echo "##[error]ERROR: No se encuentra: '$string'"
+                  $allStringsExist = $false
+              }
+          }
+          # Exit with appropriate exit code
+          if ($allStringsExist) {
+              Write-Host "Todas las cabeceras fueron encontradas en el archivo .htaccess"
+              exit 0
+          } else {
+              exit 1
+          }

@@ -1,0 +1,271 @@
+name: prerelease
+
+on:
+  push:
+    branches:
+      - main
+  workflow_call:
+    inputs:
+      language:
+        description: "Programming language of the application"
+        required: true
+        type: string
+      source-encoding:
+        description: "Source encoding for the SonarQube project (default: UTF-8)"
+        required: false
+        type: string
+        default: "UTF-8"
+      node-version:
+        description: "Version of Node.js to use"
+        required: false
+        type: string
+      typescript-framework:
+        description: "Framework for the Node.js application (e.g., angular, react)"
+        required: false
+        type: string
+      dotnet-version:
+        description: "Version of .NET to use"
+        required: false
+        type: string
+      dotnet-selfcontained:
+        description: "Whether to build .NET application as self-contained"
+        required: false
+        type: boolean
+        default: false
+      deployment-type:
+        description: "Type of deployment (e.g., docker, kubernetes, etc.)"
+        required: true
+        type: string
+      deployment-name:
+        description: "Name of application to be deployed (e.g., myapp)."
+        required: false
+        type: string
+        default: "${{ vars.DEPLOYMENT_NAME }}"
+      typescript-nombre-sitio:
+        required: false
+        type: string
+        default: "None"
+      ambiente:
+        required: false
+        type: string
+        default: "qa"       
+        
+
+jobs:
+  valida-parametros:
+    if: ${{ github.repository_owner == vars.VAR_ORGANIZACION && github.ref == 'refs/heads/main' }}
+    runs-on:
+      group: Default
+      labels: ${{ vars.RUNNER_BUILD_LABEL }}
+    steps:
+      - name: Valida Parametros
+        shell: powershell
+        run: |
+          $varlanguage= "${{ inputs.language }}"
+          $vartypescriptnombresitio = "${{ inputs.typescript-nombre-sitio }}"
+          Write-host "VALIDACION: $varlanguage - $vartypescriptnombresitio "
+          if ($varlanguage -eq "typescript" -and $vartypescriptnombresitio -eq "None")
+          {  write-Host "error:: Falta Variable typescript-nombre-sitio con nombre de sitio" 
+             exit 1 
+          }
+          exit 0
+
+  build:
+    needs: [valida-parametros]
+    if: ${{ github.repository_owner == vars.VAR_ORGANIZACION && github.ref == 'refs/heads/main' }}
+    uses: ./.github/workflows/build.yml
+    with:
+      language: ${{ inputs.language }}
+      node-version: ${{ inputs['node-version'] }}
+      typescript-framework: ${{ inputs['typescript-framework'] }}
+      dotnet-version: ${{ inputs['dotnet-version'] }}
+      dotnet-selfcontained: ${{ inputs['dotnet-selfcontained'] }}
+      source-encoding: ${{ inputs['source-encoding'] }}
+      deployment-type: ${{ inputs['deployment-type'] }}
+      deployment-name: ${{ inputs['deployment-name'] }}
+    secrets: inherit
+
+  prerelease:
+    if: ${{ (always() || vars.SKIP_CHECKS == 'true' ) && github.repository_owner == vars.VAR_ORGANIZACION && github.ref == 'refs/heads/main' }}
+    runs-on:
+      group: Default
+      labels: ${{ vars.RUNNER_BUILD_LABEL }}
+    needs: [build]
+    permissions:
+      contents: write
+
+    outputs:
+      prerelease-version: ${{ steps.generate_release.outputs.prerelease-version }}
+
+    steps:
+      - name: Sanitize git extraheaders
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'SilentlyContinue'
+          function Ignore { if ($LASTEXITCODE -ne 0) { $global:LASTEXITCODE = 0 } }
+          git --version; Ignore
+          git config --global --unset-all http.https://www.google.com/search?q=https://github.com/.extraheader; Ignore
+          git config --system --unset-all http.https://www.google.com/search?q=https://github.com/.extraheader; Ignore
+          Remove-Item Env:\GIT_HTTP_EXTRAHEADER -ErrorAction SilentlyContinue
+          [Environment]::SetEnvironmentVariable("GIT_HTTP_EXTRAHEADER",$null,"User")
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: assets
+
+      - name: List & verify downloaded assets
+        shell: powershell
+        run: |
+          Write-Host "Contenido tras descargar artifacts:"
+          Get-ChildItem -Force | Format-List
+          Write-Host "Zips encontrados (recursivo):"
+          Get-ChildItem -Recurse -Filter *.zip | ForEach-Object { $_.FullName }
+
+          $pkg='${{ needs.build.outputs.package-name }}'
+          $ext='${{ needs.build.outputs.package-extension }}'
+          $rel='${{ needs.build.outputs.release-version }}'
+
+          if ([string]::IsNullOrWhiteSpace($pkg) -or [string]::IsNullOrWhiteSpace($ext) -or [string]::IsNullOrWhiteSpace($rel)) {
+            throw "Faltan outputs del build (package-name/package-extension/release-version)"
+          }
+
+          $expected1 = ".\${pkg}.${ext}"
+          $expected2 = ".\${pkg}-${rel}.${ext}"
+
+          if (-not (Test-Path $expected1)) { throw "No se encontró $expected1" }
+          if (-not (Test-Path $expected2)) { throw "No se encontró $expected2" }
+
+          Write-Host "OK: existen $expected1 y $expected2"
+
+      - name: Configure git remote with token
+        shell: powershell
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GITHUB_TOKEN:  ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $token = if (![string]::IsNullOrWhiteSpace($env:RELEASE_TOKEN)) { $env:RELEASE_TOKEN } else { $env:GITHUB_TOKEN }
+          if ([string]::IsNullOrWhiteSpace($token)) { throw "No token available (RELEASE_TOKEN/GITHUB_TOKEN)" }
+          Write-Output "::add-mask::$token"
+          $repo = "${{ github.repository }}"
+          git config --local credential.interactive never
+          git config --local core.askPass ""
+          git remote set-url origin "https://x-access-token:$token@github.com/$repo.git"
+          git config --local user.name  "github-actions[bot]"
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote -v
+
+      - name: Check remote permissions
+        shell: powershell
+        run: |
+          $refName = $env:GITHUB_REF_NAME
+          if ($env:GITHUB_EVENT_NAME -like "pull_request*") { $refName = $env:GITHUB_HEAD_REF }
+          if (-not $refName -or $refName -eq "HEAD") { $refName = (git rev-parse --abbrev-ref HEAD) }
+          Write-Host "Verificando acceso a refs/heads/$refName"
+          git ls-remote --heads origin "refs/heads/$refName"
+
+      - name: Normalize & increment prerelease tag
+        id: prerelease_tag
+        shell: powershell
+        run: |
+          git fetch --tags --quiet
+          $raw='${{ needs.build.outputs.release-version }}'
+          if ([string]::IsNullOrWhiteSpace($raw)) { throw "build.outputs.release-version viene vacío" }
+          $base=$raw.Trim(); if ($base.StartsWith('v')) { $base=$base.Substring(1) }
+          if ($base -notmatch '^\d+\.\d+\.\d+$') { throw "Versión inválida: '$raw' (esperado X.Y.Z o vX.Y.Z)" }
+          
+          Write-Host "Versión base para prerelease: $base"
+
+          $tags = git tag --list "v${base}-rc.*"
+          $rcNumber = 0
+
+          if ($tags) {
+              $sortedTags = $tags | ForEach-Object {
+                  [int]$_.Split('.')[-1]
+              } | Sort-Object -Descending -Unique
+
+              if ($sortedTags) {
+                  $highest = $sortedTags[0]
+                  if ($highest -notmatch '^\d+$') {
+                      Write-Host "Advertencia: se encontró una etiqueta no numérica. Reiniciando la cuenta."
+                  } else {
+                      $rcNumber = [int]$highest
+                  }
+              }
+          }
+
+          $newRcNumber = $rcNumber + 1
+          $newTag = "v${base}-rc.${newRcNumber}"
+
+          Write-Host "La próxima etiqueta de prerelease será: $newTag"
+
+          "release-version=$newTag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - id: generate_release
+        uses: mario-fribla-gonzalez/generate-release@main
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+        with:
+          artifact-prefix:     ${{ needs.build.outputs.package-name }}
+          artifact-extension:  ${{ needs.build.outputs.package-extension }}
+          release-version:     "${{ steps.prerelease_tag.outputs.release-version }}"
+          prerelease:          true
+          token:               ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          assets: |
+            ${{ needs.build.outputs.package-name }}-${{ steps.prerelease_tag.outputs.release-version }}.${{ needs.build.outputs.package-extension }}
+            ${{ needs.build.outputs.package-name }}.${{ needs.build.outputs.package-extension }}
+
+      - name: Cleanup local auth
+        if: ${{ always() }}
+        shell: powershell
+        run: |
+          $repo = "${{ github.repository }}"
+          git remote set-url origin "https://github.com/$repo.git" 2>$null
+
+  deploy:
+    if: ${{ (always() || vars.SKIP_CHECKS == 'true' ) && github.repository_owner == vars.VAR_ORGANIZACION && github.ref == 'refs/heads/main' }}
+    runs-on:
+      group: Default
+      labels: ${{ vars.RUNNER_DEPLOY_LABEL }}
+    needs: [build, prerelease]
+    environment: ${{ matrix.environment }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(inputs.language == 'dotnet' && '{"environment":["staging-1"]}' || '{"environment":["staging-1"]}') }}     
+ 
+    steps:
+      - uses: mario-fribla-gonzalez/deployment-action@main
+        env:
+          IIS_ALLOW_INSECURE: ${{ vars.IIS_ALLOW_INSECURE }}
+        with:
+          deployment-type:         ${{ inputs['deployment-type'] }}
+          package-name:            ${{ needs.build.outputs.package-name }}
+          package-extension:       ${{ needs.build.outputs.package-extension }}
+          deployment-name:         ${{ inputs['deployment-name'] }}
+          release-version:         ${{ needs.prerelease.outputs.prerelease-version }}
+          iis-server-name:         ${{ vars.IIS_SERVER_NAME }}
+          iis-server-username:     ${{ vars.IIS_SERVER_USERNAME }}
+          iis-server-key:          ${{ secrets.IIS_SERVER_KEY }}
+          typescript-nombre-sitio: ${{ inputs.typescript-nombre-sitio }}
+          directorio-path:         '\\archivos.envqa\deployapp'
+
+  integrated-testing:
+    if: ${{ (always() || vars.SKIP_CHECKS == 'true' ) && github.repository_owner == vars.VAR_ORGANIZACION && github.ref == 'refs/heads/main' }}
+    runs-on:
+      group: Default
+      labels: ${{ vars.RUNNER_QA_TESTING_CONTINUE }}
+    needs: [build, prerelease, deploy]
+    strategy:
+      fail-fast: false
+
+    steps:
+      - uses: mario-fribla-gonzalez/integrated-testing@main
+        with:
+          package-name:            ${{ needs.build.outputs.package-name }}
+          deployment-name:         ${{ inputs['deployment-name'] }}
