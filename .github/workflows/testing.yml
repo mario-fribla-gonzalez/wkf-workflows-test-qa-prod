@@ -169,7 +169,7 @@ jobs:
 
      # === Deploy (usa deployment-action) ===
       - name: Deploy with msdeploy (or other)
-        uses:mario-fribla-gonzalez/reuse-deployment-action@main
+        uses: mario-fribla-gonzalez/reuse-deployment-action@main
         env:
           IIS_ALLOW_INSECURE: ${{ vars.IIS_ALLOW_INSECURE }}
         with:
