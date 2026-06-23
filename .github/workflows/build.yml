@@ -94,7 +94,7 @@ jobs:
 
       - name: Build the application
         id: package
-        uses: mario-fribla-gonzalez/build-action@main
+        uses: mario-fribla-gonzalez/reuse-build-action@main
         with:
           language: ${{ inputs.language }}
           node-version: ${{ inputs.node-version }}
@@ -319,7 +319,7 @@ jobs:
           persist-credentials: false
 
       - name: Test the application
-        uses: mario-fribla-gonzalez/build-action@main
+        uses: mario-fribla-gonzalez/reuse-build-action@main
         with:
           language: ${{ inputs.language }}
           node-version: ${{ inputs.node-version }}

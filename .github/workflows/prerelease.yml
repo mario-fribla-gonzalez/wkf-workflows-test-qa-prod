@@ -208,7 +208,7 @@ jobs:
           "release-version=$newTag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - id: generate_release
-        uses: mario-fribla-gonzalez/generate-release@main
+        uses: mario-fribla-gonzalez/reuse-generate-release@main
         env:
           GIT_TERMINAL_PROMPT: "0"
         with:
@@ -240,7 +240,7 @@ jobs:
       matrix: ${{ fromJson(inputs.language == 'dotnet' && '{"environment":["staging-1"]}' || '{"environment":["staging-1"]}') }}     
  
     steps:
-      - uses: mario-fribla-gonzalez/deployment-action@main
+      - uses: mario-fribla-gonzalez/reuse-deployment-action@main
         env:
           IIS_ALLOW_INSECURE: ${{ vars.IIS_ALLOW_INSECURE }}
         with:
@@ -265,7 +265,7 @@ jobs:
       fail-fast: false
 
     steps:
-      - uses: mario-fribla-gonzalez/integrated-testing@main
+      - uses: mario-fribla-gonzalez/reuse-integrated-testing@main
         with:
           package-name:            ${{ needs.build.outputs.package-name }}
           deployment-name:         ${{ inputs['deployment-name'] }}

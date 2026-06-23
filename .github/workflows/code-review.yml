@@ -62,7 +62,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: mario-fribla-gonzalez/gitleak-scan@main
+      - uses: mario-fribla-gonzalez/reuse-gitleak-scan@main
         with:
           gitleaks-version: '8.27.2'
          
@@ -106,7 +106,7 @@ jobs:
         with:
           python-version: '3.x'
 
-      - uses: mario-fribla-gonzalez/detect-secrets@main
+      - uses: mario-fribla-gonzalez/reuse-detect-secrets@main
         with:
           detect-secrets-version: '1.5.0'
 
@@ -157,7 +157,7 @@ jobs:
           key: dependency-check-data
 
       - name: Dependency Check
-        uses: mario-fribla-gonzalez/dependency-check@main
+        uses: mario-fribla-gonzalez/reuse-dependency-check@main
         with:
           version: '12.1.0'
           project: ${{ github.event.repository.name }}

@@ -116,7 +116,7 @@ Este repositorio está diseñado para ser utilizado como fuente de workflows reu
    ```yaml
    jobs:
      ejemplo:
-       uses: mario-fribla-gonzalez/workflows/.github/workflows/nombre_del_workflow.yml@main
+       uses: mario-fribla-gonzalez/wkf-workflows-test-qa-prod/.github/workflows/nombre_del_workflow.yml@main
        with:
          parametro1: valor1
          parametro2: valor2
@@ -182,4 +182,5 @@ flowchart TD
 ```
 
 ## Autor
-- DevOps Mario Fribla Gonzalez
+Mario Fribla
+***DevOps***

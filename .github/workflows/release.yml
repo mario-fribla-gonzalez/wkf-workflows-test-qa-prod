@@ -191,7 +191,7 @@ jobs:
 
       - id: publish-release
         if: ${{ steps.tag_exists_win.outputs.exists != 'true' && steps.detect_tag_win.outputs.tag == '' }}
-        uses:  mario-fribla-gonzalez/publish-release@main
+        uses:  mario-fribla-gonzalez/reuse-publish-release@main
         with:
           commit-sha: ${{ github.event.pull_request.head.sha || github.sha }}
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -214,7 +214,7 @@ jobs:
       - promote
     environment: ${{matrix.environment}}
     steps:
-      - uses: mario-fribla-gonzalez/deployment-action@main
+      - uses: mario-fribla-gonzalez/reuse-deployment-action@main
         env:
           IIS_ALLOW_INSECURE: ${{ vars.IIS_ALLOW_INSECURE }}
         with:
