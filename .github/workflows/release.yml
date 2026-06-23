@@ -206,7 +206,7 @@ jobs:
 
   deploy:
     if: ${{ ( github.event.pull_request.merged == true || (( github.event_name == 'push' || github.event_name == 'workflow_dispatch' ) && ( github.ref == 'refs/heads/main' ))) && github.event.pull_request.merged == true && needs.promote.outputs.existe-version != 'true' && github.repository_owner == vars.VAR_ORGANIZACION }}
-    runs-on:
+    runs-on: 
       group: Default
       labels: ${{ vars.RUNNER_DEPLOY_LABEL_PROD }}
     # Set environment based on the branch
